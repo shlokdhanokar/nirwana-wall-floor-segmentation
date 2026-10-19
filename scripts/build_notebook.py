@@ -117,20 +117,18 @@ save_outputs(img, out, "results/samples", "Contemporary_Stone_Accent_Lounge")   
         md("""**Reading the score on this image:** the reference GT labels only the **stone accent wall** as wall. The dark vertical slat panelling at both sides, the windows and the pendant lamps are excluded. The model gives the same answer (wall IoU ≈ 0.93, floor IoU ≈ 0.95). The remaining errors are a small leak of the wall mask into the top of the window at the left edge of the stone wall, and the thin chair and table legs on the floor, which are a few pixels wide even at full resolution.
 
 ### Try your own image
-On Colab, run the next cell and pick a file (or set `IMAGE_URL`). Any interior photo works, at any resolution."""),
-        code("""IMAGE_URL = ""   # optionally paste a direct image URL here
+Set `UPLOAD = True` and re-run the next cell to pick files on Colab, or paste a direct link into `IMAGE_URL`. Any interior photo works, at any resolution. (Upload is off by default so that **Run all** never stops at a file picker.)"""),
+        code("""UPLOAD = False   # True: open the Colab file picker
+IMAGE_URL = ""   # or paste a direct image URL here
 paths = []
-try:
-    from google.colab import files            # Colab upload widget
-    up = files.upload()
-    paths = list(up.keys())
-except Exception:
-    pass
+if UPLOAD:
+    from google.colab import files
+    paths = list(files.upload().keys())
 if IMAGE_URL:
     import urllib.request
     urllib.request.urlretrieve(IMAGE_URL, "url_image.jpg"); paths.append("url_image.jpg")
 if not paths:
-    print("No upload - using the bundled sample image.")
+    print("No image given - using the bundled sample image.")
     paths = ["samples/Contemporary_Stone_Accent_Lounge.webp"]
 for p in paths:
     im = load_rgb(p)
