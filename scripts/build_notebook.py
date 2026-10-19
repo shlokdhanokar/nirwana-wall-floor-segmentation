@@ -271,7 +271,7 @@ if not os.path.isdir("data/ADEChallengeData2016"):
         code("""EPOCHS = 30
 # encoder from ImageNet classification weights (disclosed); add --no-pretrained-encoder for the from-scratch ablation
 !python -m wallfloor.train --cache data/cache --out weights/wallfloor_mbv3.pt --epochs {EPOCHS} --batch 16 --workers {os.cpu_count()} --loader process"""),
-        code("""!python -m wallfloor.export --weights weights/wallfloor_mbv3.pt --calib data/cache --n-calib 64
+        code("""!python -m wallfloor.export --weights weights/wallfloor_mbv3.pt --calib data/cache   # FP32 ONNX + INT8 (percentile, 16 calib images)
 !ls -la weights"""),
         code("""%%time
 # quality on the GPU; latency on this runtime's CPU (threads = all vCPUs)

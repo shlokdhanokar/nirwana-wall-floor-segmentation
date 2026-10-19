@@ -83,6 +83,9 @@ def main():
     ap.add_argument("--threads", type=int, default=4, help="CPU threads for the latency benchmark")
     ap.add_argument("--device", default=None, help="device for the quality pass of PyTorch variants (default: cuda if available)")
     ap.add_argument("--out", default="results/metrics.json")
+    ap.add_argument("--only", nargs="*", default=None,
+                    help="re-run only variants whose name contains one of these substrings; "
+                         "their rows replace the matching rows of an existing --out file")
     a = ap.parse_args()
 
     names = json.load(open(os.path.join(a.cache, "manifest.json")))["val"]
@@ -107,7 +110,12 @@ def main():
         ("ONNX fp32 320 + refine", onnx32, 320, False, True),
         ("ONNX fp32 448 + refine", onnx32, 448, False, True),
     ]
+    canonical = [v[0] for v in variants]  # table order
     results = []
+    if a.only is not None:
+        variants = [v for v in variants if any(o in v[0] for o in a.only)]
+        if os.path.exists(a.out):
+            results = json.load(open(a.out))
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     for name, w, short, tta, refine in variants:
         if w is not None and not os.path.exists(w):
@@ -126,9 +134,12 @@ def main():
         s, _ = eval_sample(fn, img, gts)
         r.update(s)
         r["latency_ms_3558x2160_cpu"] = latency(fn_cpu, img, 3 if w is None else a.runs)
-        results.append(r)
+        results = [x for x in results if x["variant"] != name] + [r]
         print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()}), flush=True)
         json.dump(results, open(a.out, "w"), indent=1)
+
+    results.sort(key=lambda r: canonical.index(r["variant"]) if r["variant"] in canonical else len(canonical))
+    json.dump(results, open(a.out, "w"), indent=1)
 
     # markdown table for the README
     hdr = "| Variant | val IoU wall | val IoU floor | val mIoU | val BF wall | val BF floor | sample IoU wall | sample IoU floor | CPU latency (ms) |"

@@ -24,14 +24,16 @@ def export_onnx(weights, out_path, opset=17):
     return out_path
 
 
-def quantize_int8(fp32_path, out_path, calib_images, short_side=384):
+def quantize_int8(fp32_path, out_path, calib_images, short_side=384, method="percentile"):
     """Static INT8 (QDQ) quantisation calibrated on real interior images.
     Static rather than dynamic: dynamic quantisation only covers MatMul/Gemm,
     while this network is almost entirely Conv.
     Calibration: percentile (99.999 %) rather than min/max. MobileNetV3's
     hard-swish activations have long-tailed ranges, and min/max calibration wastes
     most of the 8-bit range on rare outliers (measured: -6 to -8 IoU points).
-    Histogram calibration needs a few GB of RAM; min/max is the fallback."""
+    Histogram calibration keeps every intermediate activation of every calibration
+    image in RAM: 64 images exhausted a 12 GB Colab runtime, so it uses 16 images
+    and flushes histograms every 2 batches. min/max remains available."""
     from onnxruntime.quantization import (CalibrationDataReader, CalibrationMethod, QuantFormat, QuantType,
                                           quantize_static)
     from onnxruntime.quantization.shape_inference import quant_pre_process
@@ -54,15 +56,12 @@ def quantize_int8(fp32_path, out_path, calib_images, short_side=384):
     quant_pre_process(fp32_path, pre)
     common = dict(quant_format=QuantFormat.QDQ, per_channel=True,
                   activation_type=QuantType.QUInt8, weight_type=QuantType.QInt8)
-    try:
+    if method == "percentile":
         quantize_static(pre, out_path, Reader(), calibrate_method=CalibrationMethod.Percentile,
-                        extra_options={"CalibPercentile": 99.999, "CalibMaxIntermediateOutputs": 8}, **common)
-        method = "percentile"
-    except MemoryError:
+                        extra_options={"CalibPercentile": 99.999, "CalibMaxIntermediateOutputs": 2}, **common)
+    else:
         quantize_static(pre, out_path, Reader(), calibrate_method=CalibrationMethod.MinMax, **common)
-        method = "minmax"
     os.remove(pre)
-    print("INT8 calibration:", method)
     return out_path
 
 
@@ -70,16 +69,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", default="weights/wallfloor_mbv3.pt")
     ap.add_argument("--calib", default="data/cache", help="prepared cache dir (uses train images)")
-    ap.add_argument("--n-calib", type=int, default=64)
+    ap.add_argument("--n-calib", type=int, default=16)
+    ap.add_argument("--method", choices=["percentile", "minmax"], default="percentile")
+    ap.add_argument("--int8-only", action="store_true", help="reuse the existing FP32 ONNX file")
     a = ap.parse_args()
-    fp32 = export_onnx(a.weights, a.weights.replace(".pt", ".onnx"))
-    print("exported", fp32, f"{os.path.getsize(fp32) / 1e6:.1f} MB")
+    fp32 = a.weights.replace(".pt", ".onnx")
+    if not (a.int8_only and os.path.exists(fp32)):
+        export_onnx(a.weights, fp32)
+        print("exported", fp32, f"{os.path.getsize(fp32) / 1e6:.1f} MB")
     if os.path.exists(os.path.join(a.calib, "manifest.json")):
         names = json.load(open(os.path.join(a.calib, "manifest.json")))["train"]
         rng = np.random.default_rng(0)
         calib = [os.path.join(a.calib, "train", n + ".jpg") for n in rng.choice(names, a.n_calib, replace=False)]
-        int8 = quantize_int8(fp32, a.weights.replace(".pt", "_int8.onnx"), calib)
-        print("quantised", int8, f"{os.path.getsize(int8) / 1e6:.1f} MB")
+        int8 = quantize_int8(fp32, a.weights.replace(".pt", "_int8.onnx"), calib, method=a.method)
+        print(f"quantised ({a.method}, {a.n_calib} calibration images)", int8, f"{os.path.getsize(int8) / 1e6:.1f} MB")
 
 
 if __name__ == "__main__":
