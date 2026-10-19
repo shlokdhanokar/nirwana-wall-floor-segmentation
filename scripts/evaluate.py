@@ -100,15 +100,14 @@ def main():
     # (name, weights, short_side, tta, refine); quality runs on --device, latency always on CPU
     variants = [
         ("classical (LSD horizon + GrabCut)", None, None, None, None),
-        ("net 384, bilinear upsample", pt, 384, False, False),
-        ("net 384 + guided refine", pt, 384, False, True),
-        ("net 384 + refine + flip-TTA", pt, 384, True, True),
-        ("ONNX fp32 384 + refine + TTA", onnx32, 384, True, True),
-        ("ONNX fp32 384 + refine", onnx32, 384, False, True),
-        ("ONNX int8 384 + refine", onnx8, 384, False, True),
-        ("ONNX fp32 256 + refine", onnx32, 256, False, True),
-        ("ONNX fp32 320 + refine", onnx32, 320, False, True),
-        ("ONNX fp32 448 + refine", onnx32, 448, False, True),
+        ("net 384 (default)", pt, 384, False, False),
+        ("net 384 + guided-filter refine", pt, 384, False, True),
+        ("net 384 + flip-TTA", pt, 384, True, False),
+        ("ONNX fp32 384 (default)", onnx32, 384, False, False),
+        ("ONNX int8 384", onnx8, 384, False, False),
+        ("ONNX fp32 256", onnx32, 256, False, False),
+        ("ONNX fp32 320", onnx32, 320, False, False),
+        ("ONNX fp32 448", onnx32, 448, False, False),
     ]
     canonical = [v[0] for v in variants]  # table order
     results = []
@@ -142,7 +141,7 @@ def main():
     json.dump(results, open(a.out, "w"), indent=1)
 
     # markdown table for the README
-    hdr = "| Variant | val IoU wall | val IoU floor | val mIoU | val BF wall | val BF floor | sample IoU wall | sample IoU floor | CPU latency (ms) |"
+    hdr = "| Variant | val IoU wall | val IoU floor | val mIoU | val BF wall | val BF floor | sample IoU wall | sample IoU floor | latency (ms) |"
     lines = [hdr, "|" + "---|" * 9]
     for r in results:
         lines.append(f"| {r['variant']} | {r['val_iou_wall']:.3f} | {r['val_iou_floor']:.3f} | {r['val_miou']:.3f} | "

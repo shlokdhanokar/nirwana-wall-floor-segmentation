@@ -43,9 +43,9 @@ Jump to **§3** to upload your own image.
 **TL;DR**
 * **Formulation:** 3-class dense labelling *(other / wall / floor)* rather than two independent binary problems. Wall and floor are mutually exclusive, and the hard negatives (ceiling, windows, doors, furniture) need a class of their own.
 * **Model:** *WallFloorNet*, a 3.3 M-parameter encoder-decoder (MobileNetV3 encoder plus my own global-context FPN decoder), **trained by me** on ~9.2k interior scenes filtered from ADE20K. No pre-trained or fine-tuned *segmentation* model is used anywhere (see §0).
-* **Classical post-processing:** a fast guided filter snaps the low-resolution predictions to real image edges at full resolution, and connected-component cleanup removes specks.
+* **Post-processing:** the probabilities are upsampled to full resolution and decided by argmax, then connected-component cleanup removes specks and pinholes. A guided-filter edge-snapping stage was built, tested in an 11-setting sweep, and **switched off** because it did not improve boundaries (§4).
 * **Baseline / first experiment:** a training-free geometric pipeline (LSD vanishing-point horizon plus GrabCut), kept for comparison. It handles floors reasonably and walls poorly. That result is the reason a learned model was needed.
-* **Speed:** ONNX Runtime plus INT8 static quantisation gives a fast CPU path for a full-resolution 3558×2160 photo (numbers in §6).
+* **Speed:** about 0.25 s end-to-end for a full-resolution 3558×2160 photo on 2 CPU threads (ONNX Runtime, FP32), down from ~1.3 s for the first working version. INT8 quantisation was tried and rejected (§6).
 
 {best_line}
 """),
@@ -77,7 +77,7 @@ from wallfloor.infer import WallFloorSegmenter, load_rgb
 from wallfloor.classical import segment_classical
 from wallfloor.metrics import binary_iou, boundary_f1
 from wallfloor.viz import show, overlay, save_outputs
-print("root:", ROOT, "| torch", torch.__version__, "| CUDA:", torch.cuda.is_available())
+print("torch", torch.__version__, "| CUDA:", torch.cuda.is_available())
 print(sorted(os.listdir("weights")))""" % repo_url),
         md("""## 1 · Problem formulation
 * **Input:** one RGB interior photo of any size and aspect ratio. **Output:** two binary masks at the *input* resolution.
@@ -91,12 +91,11 @@ print(sorted(os.listdir("weights")))""" % repo_url),
         md("""## 2 · Pipeline
 ```
 image (any size) ─► resize (short side 384, /32) ─► WallFloorNet ─► softmax probs (≈384 px)
-                                                      ▲  flip-TTA (optional)
-                                                      │
- full-res guide (gray) ─────────────────────────────► fast guided filter ─► argmax ─► CC cleanup ─► wall, floor masks
+   ─► bilinear upsample to output res (≤2048 px) ─► argmax ─► CC cleanup ─► nearest upsample ─► wall, floor masks
+      (optional, off by default: flip-TTA; guided-filter refinement with the full-res image as guide)
 ```
 **WallFloorNet** (`wallfloor/model.py`)
-* *Encoder*: MobileNetV3-Large feature extractor, taps at strides 4/8/16/32. Chosen for its accuracy-per-FLOP and because it quantises well to INT8 for the CPU path.
+* *Encoder*: MobileNetV3-Large feature extractor, taps at strides 4/8/16/32. Chosen for its accuracy per FLOP on CPU.
 * *Context block* (stride 32): wall vs. floor is mostly a **global layout** decision. A pixel of beige texture is floor at the bottom of the room and wall behind the sofa. The block gates a local projection with a global-average-pooled descriptor (LR-ASPP style) and concatenates an explicit global context vector.
 * *Top-down FPN*: fuses stride 16 → 8 → 4 with lateral 1×1 convs and depthwise-separable 3×3 smoothing, which keeps boundaries (skirting lines, wall corners) sharp at low cost.
 * *Loss*: cross-entropy (`ignore_index` for unannotated pixels, mild class weights) **plus soft Dice** on wall and floor, so large easy regions don't dominate.
@@ -104,7 +103,7 @@ image (any size) ─► resize (short side 384, /32) ─► WallFloorNet ─► 
 * *Augmentation*: scale 0.6–1.6, crops, ±8° rotation (handheld photos), **horizontal flip only** (a vertical flip would break the floor-is-down prior the model should learn), strong colour, exposure, blur and noise jitter (walls come in every colour, and interiors range from tungsten-dim to blown-out daylight).
 """),
         md("## 3 · Run on an image\nThe reference image shipped with the assignment, scored against its ground-truth masks:"),
-        code("""seg = WallFloorSegmenter("weights/wallfloor_mbv3.pt", short_side=384, tta=True, refine=True)
+        code("""seg = WallFloorSegmenter("weights/wallfloor_mbv3.pt", short_side=384)   # defaults: no TTA, no guided refinement
 
 img = load_rgb("samples/Contemporary_Stone_Accent_Lounge.webp")
 out = seg(img)
@@ -115,7 +114,7 @@ gt = {k: cv2.imread(f"samples/gt/Contemporary_Stone_Accent_Lounge_{k}.png", 0) >
 for k in ("wall", "floor"):
     print(f"{k:5s}  IoU = {binary_iou(out[k], gt[k]):.3f}   boundary-F = {boundary_f1(out[k], gt[k]):.3f}")
 save_outputs(img, out, "results/samples", "Contemporary_Stone_Accent_Lounge")   # full-res masks as PNG"""),
-        md("""**Reading the score on this image:** the reference GT labels only the **stone accent wall** as wall. The **dark vertical slat panelling** at both sides is left out of both masks. Under the ADE20K convention the model learned, wall cladding is wall, so the model also marks the slat panels. Most of the remaining wall "error" is that **annotation-convention difference**, not a localisation error. The floor (wood planks + rug, excluding furniture legs) is where the definitions agree.
+        md("""**Reading the score on this image:** the reference GT labels only the **stone accent wall** as wall. The dark vertical slat panelling at both sides, the windows and the pendant lamps are excluded. The model gives the same answer (wall IoU ≈ 0.93, floor IoU ≈ 0.95). The remaining errors are a small leak of the wall mask into the top of the window at the left edge of the stone wall, and the thin chair and table legs on the floor, which are a few pixels wide even at full resolution.
 
 ### Try your own image
 On Colab, run the next cell and pick a file (or set `IMAGE_URL`). Any interior photo works, at any resolution."""),
@@ -139,7 +138,8 @@ for p in paths:
     show(im, o, title=os.path.basename(p))
     save_outputs(im, o, "results/uploads", os.path.splitext(os.path.basename(p))[0])
 print("masks saved to results/uploads/")"""),
-        md("## 4 · What each stage contributes\nNetwork probabilities at ~384 px vs. the full-resolution result after guided-filter refinement (zoomed crops):"),
+        md("""## 4 · What each stage contributes, and an experiment that didn't pan out
+The network outputs probabilities at ~384 px. **Hypothesis:** snapping them to full-resolution image edges with a fast guided filter (He & Sun 2015) should sharpen the mask boundaries. It was implemented efficiently (`wallfloor/refine.py`: the argmax decision functions are linear in the guide, so only per-pixel coefficients are upsampled) and then **measured**. An 11-setting sweep over radius, eps and working resolution on 200 validation images plus the reference image ([`results/refine_sweep.md`](../results/refine_sweep.md)) found **no setting that beats plain bilinear upsampling on boundary F**. The radius that adds +0.004 IoU on the reference image costs −0.07 floor boundary-F there. The grayscale guide pulls edges toward strong *texture* edges (plank seams, stone veins, rug patterns), not toward surface boundaries. So refinement is off by default. The crops below show both:"""),
         code("""raw = WallFloorSegmenter("weights/wallfloor_mbv3.pt", tta=False, refine=False)(img)
 ref = WallFloorSegmenter("weights/wallfloor_mbv3.pt", tta=False, refine=True)(img)
 fig, ax = plt.subplots(1, 3, figsize=(18, 4))
@@ -170,9 +170,16 @@ for k in ("wall", "floor"):
         md(f"""**Experiments 2–6: learned model, refinement, TTA, resolution, quantisation.** Quantitative comparison on the
 held-out **ADE20K interior validation split** (922 images, never trained on) and on the reference image.
 IoU is per-class over the whole split. BF is the boundary F-score at a tolerance of 0.75 % of the image diagonal, so it measures edge quality, which IoU barely reflects.
-Latency is end-to-end on the 3558×2160 reference photo (CPU, 4 threads, median of 10 runs), *including* resize, refinement and cleanup.
+Latency is end-to-end on the 3558×2160 reference photo (AMD Ryzen 5 4600H laptop CPU, 2 threads, median of 10 runs), *including* resize and post-processing.
 
 {metrics_md}
+**What the table says**
+* **Learning was the right call:** val mIoU 0.354 → 0.795, with walls going from 0.38 to 0.75 IoU. The classical baseline is also ~19× slower.
+* **Guided refinement does not earn its place.** On the 12 MP reference photo it nudges IoU up (wall 0.931 → 0.934, floor 0.946 → 0.950) but lowers floor boundary-F (0.767 → 0.699). On validation it lowers both IoU and BF slightly. It also costs ~0.15 s. Off by default (sweep in §4).
+* **Flip-TTA isn't worth it:** +0.002 val mIoU, but it drops the reference wall IoU from 0.930 to 0.906 and costs 1.7× latency, so it is off by default.
+* **Input resolution:** 384 px is the sweet spot. 320 px costs 0.007 mIoU for −13 % latency; 256 px costs 0.026. 448 px adds nothing, since the receptive field then covers less of the room.
+* **INT8 post-training quantisation: rejected** (−5.4 mIoU for a 4 % speed-up; see §6).
+* The in-training validation number (0.775 at epoch 28) is lower than the 0.793–0.795 here because training-time validation scores the raw network output at 384 px. This table runs the full pipeline (cleanup included) at the stored image resolution.
 """),
         code("""import pandas as pd
 hist = pd.DataFrame(json.load(open("weights/wallfloor_mbv3_history.json")))
@@ -191,10 +198,11 @@ pd.DataFrame(json.load(open("results/metrics.json"))).round(3)"""),
         md("""## 6 · Performance optimisation (bonus)
 Levers, in order of impact:
 1. **Architecture budget:** MobileNetV3 plus a 0.34 M-parameter decoder: 3.3 M params in total, 13 MB FP32.
-2. **Decouple network resolution from output resolution:** the network sees ~384 px. Full resolution comes from the guided filter, where only the per-pixel linear coefficients are upsampled, so cost is O(pixels) with a tiny constant. Running the network at full 3558×2160 would be roughly 50× more compute and *less* accurate, because the receptive field would cover a smaller share of the room.
-3. **ONNX Runtime** graph optimisations (operator fusion) for the CPU path.
-4. **INT8 static quantisation** (QDQ, per-channel weights, calibrated on 64 interior images): 4× smaller model, faster convolutions on CPU, with the IoU change measured in the table above.
-5. Flip-TTA is optional: about +2× network time for a small accuracy gain. It is a switch for quality-vs-latency, off in the fast path.
+2. **Decouple network resolution from output resolution:** the network sees ~384 px. Running it at full 3558×2160 would be roughly 50× more compute and *less* accurate, because the receptive field would cover a smaller share of the room. The argmax is evaluated as three linear decision functions (q_w−q_f, 2q_w+q_f−1, 2q_f+q_w−1), so full resolution only sees single-channel resize and compare ops. Decisions are capped at 2048 px and the final uint8 label map is nearest-upsampled (≤1.7 px edge error on 12 MP).
+3. **Full-resolution post-processing rewritten** from numpy passes over float probability maps to fused OpenCV uint8 ops. Connected-component cleanup runs on a conservative max-pooled copy. 12 MP post-processing went from ~0.9 s to ~0.1 s.
+4. **ONNX Runtime** graph optimisations (operator fusion) for the CPU path.
+5. **INT8 static quantisation, tried and rejected.** QDQ with per-channel weights and percentile calibration gives a 3.5× smaller file (13.3 → 3.8 MB), but it costs **5.4 mIoU points** on validation and only cuts end-to-end latency by 4 % (256 → 247 ms), because the network is only part of the end-to-end time. Min/max calibration was worse (−6 to −8 points). MobileNetV3's hard-swish and squeeze-excite activations are known to be quantisation-sensitive. Quantisation-aware training would be the way to recover the accuracy if model size mattered (e.g. on-device).
+6. **Flip-TTA, measured and switched off.** +0.002 val mIoU, a worse reference wall (0.930 → 0.906), and 1.7× latency.
 
 Live benchmark on *this* runtime:"""),
         code("""def bench(s, im, n=5):

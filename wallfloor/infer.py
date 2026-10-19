@@ -30,7 +30,7 @@ def load_rgb(path):
 
 
 class WallFloorSegmenter:
-    def __init__(self, weights, short_side=384, tta=True, refine=True, device=None, threads=None, out_long=2048):
+    def __init__(self, weights, short_side=384, tta=False, refine=False, device=None, threads=None, out_long=2048):
         """out_long: masks are decided at <= out_long px (long side) and nearest-upsampled
         beyond that; the edge error is <= W/out_long px (~1.7 px for a 12 MP photo)."""
         self.short_side, self.tta, self.refine, self.out_long = short_side, tta, refine, out_long
@@ -120,10 +120,10 @@ def main():
     ap.add_argument("--weights", default="weights/wallfloor_mbv3.pt")
     ap.add_argument("--out", default="results")
     ap.add_argument("--short-side", type=int, default=384)
-    ap.add_argument("--no-tta", action="store_true")
-    ap.add_argument("--no-refine", action="store_true")
+    ap.add_argument("--tta", action="store_true", help="horizontal-flip test-time augmentation (no measured gain)")
+    ap.add_argument("--refine", action="store_true", help="guided-filter refinement (no measured gain, see results/refine_sweep.md)")
     a = ap.parse_args()
-    seg = WallFloorSegmenter(a.weights, a.short_side, tta=not a.no_tta, refine=not a.no_refine)
+    seg = WallFloorSegmenter(a.weights, a.short_side, tta=a.tta, refine=a.refine)
     os.makedirs(a.out, exist_ok=True)
     for p in a.images:
         img = load_rgb(p)
