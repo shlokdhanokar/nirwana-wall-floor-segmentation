@@ -1,0 +1,10 @@
+# Inference (all preinstalled on Google Colab except onnxruntime)
+numpy
+opencv-python-headless
+pillow
+matplotlib
+torch>=2.1
+torchvision>=0.16
+onnxruntime>=1.17
+# Export / quantisation (optional)
+onnx

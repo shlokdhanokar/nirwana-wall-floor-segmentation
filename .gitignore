@@ -1,0 +1,10 @@
+data/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+scratch*/
+# assignment documents and the original (duplicated under samples/) inputs stay local
+*.pdf
+/Contemporary_Stone_Accent_Lounge.webp
+/floor_1.png
+/walls_1.png
